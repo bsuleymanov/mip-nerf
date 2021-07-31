@@ -2,6 +2,7 @@ import torch
 from torch import nn
 import mip
 from torch.nn import functional as F
+import utils
 
 
 class MipNerfModel(nn.Module):
@@ -95,6 +96,20 @@ class MipNerfModel(nn.Module):
         return ret
 
 
+def make_mipnerf(example_batch, args, kwargs, device):
+    model = MipNerfModel(*args, **kwargs).to(device)
+    model(example_batch.to(device))
+
+    init_variables = {
+        "rays": utils.namedtuple_map(lambda x: x[0], example_batch['rays']),
+        "randomized": False,
+        "white_bg": False
+    }
+
+    return model, init_variables
+
+
+
 class DenseBlock(nn.Module):
     def __init__(self, n_units: int = 256):
         super(DenseBlock, self).__init__()
@@ -159,5 +174,38 @@ class MLP(nn.Module):
         return raw_rgb, raw_density
 
 
-def render_image(render_fn, rays, rng, chunk=8192):
-    ...
+def render_image(render_fn, rays, rank, chunk=8192):
+    n_devices = torch.cuda.device_count()
+    height, width = rays[0].shape[:2]
+    num_rays = height * width
+    rays = utils.namedtuple_map(lambda r: r.reshape((num_rays, -1)), rays)
+
+    #host_id = jax.host_id()
+    #n_hosts = 1
+    #host_id = 0
+    results = []
+    for i in range(0, num_rays, chunk):
+        # pylint: disable=cell-var-from-loop
+        chunk_rays = utils.namedtuple_map(lambda r: r[i:i + chunk], rays)
+        chunk_size = chunk_rays[0].shape[0]
+        rays_remaining = chunk_size % torch.cuda.device_count()
+        if rays_remaining != 0:
+            padding = n_devices - rays_remaining
+            chunk_rays = utils.namedtuple_map(
+                lambda r: F.pad(r, ((0, padding), (0, 0)), mode='edge'), chunk_rays)
+        else:
+            padding = 0
+        # After padding the number of chunk_rays is always divisible by
+        # host_count.
+        rays_per_host = chunk_rays[0].shape[0]
+        start, stop = 0 * rays_per_host, (0 + 1) * rays_per_host
+        chunk_rays = utils.namedtuple_map(lambda r: utils.shard(r[start:stop]),
+                                          chunk_rays)
+        chunk_results = render_fn(chunk_rays)[-1]
+        results.append([utils.unshard(x[0], padding) for x in chunk_results])
+        # pylint: enable=cell-var-from-loop
+    rgb, distance, acc = [torch.cat(r, axis=0) for r in zip(*results)]
+    rgb = rgb.reshape((height, width, -1))
+    distance = distance.reshape((height, width))
+    acc = acc.reshape((height, width))
+    return (rgb, distance, acc)
