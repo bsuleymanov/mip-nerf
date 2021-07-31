@@ -3,6 +3,7 @@ from pathlib import Path
 from PIL import Image
 import numpy as np
 import collections
+from . import utils
 
 
 Rays = collections.namedtuple(
@@ -35,12 +36,19 @@ def convert_to_ndc(origins, directions, focal, w, h, near=1.):
 
 class Dataset:
     def __init__(self, data_dir, split, near, far,
-                 render_path):
+                 to_render_path, batching_mode, factor,
+                 to_spherify, llffhold):
         self.dataset = []
         self.data_dir = Path(data_dir)
         self.split = split
         self.near = near
         self.far = far
+        self.batching_mode = batching_mode
+        self.factor = factor
+        self.to_render_path = to_render_path
+        self.to_spherify = to_spherify
+        self.llffhold = llffhold
+
         if split == "train":
             self._train_init()
         elif split == "test":
@@ -49,14 +57,37 @@ class Dataset:
             raise ValueError(
                 f"the split argument should be either 'train' or 'test', set"
                 f"to {split} here.")
-        self.render_path = render_path
 
     def _train_init(self):
-        self._load_rendering()
+        self._load_renderings()
         self._generate_rays()
+        if self.batching_mode == "all_images":
+            self.images = self.images.reshape([-1, 3])
+            self.rays = utils.namedtuple_map(lambda r: r.reshape([-1, r.shape[-1]]),
+                                             self.rays)
+        # TODO: Implement single_image batching_mode.
+        #elif #self.batching_mode == "single_image":
+            #self.images = self.images.reshape([-1, self.resolution, 3])
+            #self.rays = utils.namedtuple_map(
+            #    lambda r: r.reshape([-1, self.resolution, r.shape[-1]]), self.rays)
+
+        else:
+            raise NotImplementedError(
+                f"{self.batching_mode} batching strategy is not implemented.")
 
     def _test_init(self):
+        self._load_renderings()
+        self._generate_rays()
+        self.it = 0
+
+    def _next_train(self):
+        # implement it in Dataloader class
         ...
+
+    def _next_test(self):
+        # implement it in Dataloader class
+        ...
+
 
     def _generate_rays(self):
         """Generating rays for all images."""
@@ -94,7 +125,24 @@ class Dataset:
             far=ones * self.far)
 
     def __getitem__(self, index):
-        ...
+        if self.split == "train":
+            if self.batching_mode == "all_images":
+                pixels = self.images[index]
+                rays = utils.namedtuple_map(lambda r: r[index], self.rays)
+            # TODO: Implement single_image batching_mode.
+            else:
+                raise NotImplementedError(
+                    f"{self.batching} batching strategy is not implemented.")
+            return {"pixels": pixels, "rays": rays}
+        elif self.split == "test":
+            if self.to_render_path:
+                return {"rays": utils.namedtuple_map(lambda r: r[index], self.render_rays)}
+            else:
+                return {
+                    'pixels': self.images[index],
+                    'rays': utils.namedtuple_map(lambda r: r[index], self.rays)
+                }
+
 
     def __len__(self):
         return self.n_examples
@@ -108,13 +156,15 @@ class TestDataset:
 
 
 class LLFFDataset(Dataset):
-    def _load_renderings(self, data_dir, factor, to_spherify,
-                         split, llffhold, to_render_path):
-        self.data_dir = Path(data_dir)
-        if factor > 1:
-            image_dir = data_dir / f"images_{factor}"
+    # def __init__(self):
+    #     super(LLFFDataset, self).__init__()
+
+    def _load_renderings(self):
+        #self.data_dir = Path(data_dir)
+        if self.factor > 1:
+            image_dir = self.data_dir / f"images_{self.factor}"
         else:
-            image_dir = data_dir / f"images"
+            image_dir = self.data_dir / f"images"
         if not image_dir.exists():
             raise ValueError(f'Image folder {str(image_dir)} does not exist.')
         extensions = ("jpg", "JPG", "png")
@@ -123,6 +173,7 @@ class LLFFDataset(Dataset):
             image_paths.extend(sorted(list(map(str, image_dir.glob(f"*.{ext}")))))
         images = []
         for image_path in image_paths:
+            print(image_path)
             with open(image_path, "rb") as image_obj:
                 image = np.array(Image.open(image_obj), dtype=np.float32) / 255.
                 images.append(image)
@@ -138,7 +189,7 @@ class LLFFDataset(Dataset):
                                f"and poses {poses.shape[-1]}.")
 
         poses[:2, 4, :] = np.array(image.shape[:2]).reshape([2, 1])
-        poses[2, 4, :] = poses[2, 4, :] * 1. / factor
+        poses[2, 4, :] = poses[2, 4, :] * 1. / self.factor
 
         # Correct rotation matrix ordering and move variable dim to axis 0.
         poses = np.concatenate(
@@ -154,19 +205,17 @@ class LLFFDataset(Dataset):
 
         poses = self._recenter_poses(poses)
 
-        if to_spherify:
+        if self.to_spherify:
             poses = self._generate_spherical_poses(poses, bds)
-            self.to_spherify = True
-        else:
-            self.to_spherify = False
-        if not to_spherify and split == "test":
+
+        if not self.to_spherify and self.split == "test":
             self._generate_spiral_poses(poses, bds)
 
         # select the split
-        i_test = np.arange(images.shape[0])[::llffhold]
+        i_test = np.arange(images.shape[0])[::self.llffhold]
         i_train = np.array(
             [i for i in np.arange(int(images.shape[0])) if i not in i_test])
-        if split == 'train':
+        if self.split == 'train':
             indices = i_train
         else:
             indices = i_test
@@ -178,7 +227,7 @@ class LLFFDataset(Dataset):
         self.focal = poses[0, -1, -1]
         self.h, self.w = images.shape[1:3]
         self.resolution = self.h * self.w
-        if to_render_path:
+        if self.to_render_path:
             self.n_examples = self.render_poses.shape[0]
         else:
             self.n_examples = images.shape[0]
@@ -192,7 +241,7 @@ class LLFFDataset(Dataset):
 
         super()._generate_rays()
 
-        if not self.spherify:
+        if not self.to_spherify:
             ndc_origins, ndc_directions = convert_to_ndc(self.rays.origins,
                                                          self.rays.directions,
                                                          self.focal, self.w, self.h)
