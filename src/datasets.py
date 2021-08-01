@@ -4,6 +4,8 @@ from PIL import Image
 import numpy as np
 import collections
 from . import utils
+import torch.utils.data.distributed as data_dist
+from hydra.utils import to_absolute_path, get_original_cwd
 
 
 Rays = collections.namedtuple(
@@ -400,12 +402,56 @@ class LLFFDataset(Dataset):
 
 
 
-class Dataloader:
-    def __init__(self, image_dir, batch_size=8,
+class _RepeatSampler(object):
+    """ Sampler that repeats forever.
+    Args:
+        sampler (Sampler)
+    """
+
+    def __init__(self, sampler):
+        self.sampler = sampler
+
+    def __iter__(self):
+        while True:
+            yield from iter(self.sampler)
+
+
+class FastDataLoader(torch.utils.data.dataloader.DataLoader):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        object.__setattr__(self, 'batch_sampler', _RepeatSampler(self.batch_sampler))
+        self.iterator = super().__iter__()
+
+    def __len__(self):
+        return len(self.batch_sampler.sampler)
+
+    def __iter__(self):
+        for i in range(len(self)):
+            yield next(self.iterator)
+
+
+class LLFFDataloader:
+    def __init__(self, data_dir, split, near, far,
+                 to_render_path, batching_mode, factor,
+                 to_spherify, llffhold, batch_size=8,
                  drop_last=False, shuffle=False,
-                 num_workers=8):
-        dataset = Dataset()
-        self.loader = torch.utils.data.DataLoader(
-            dataset=dataset, batch_size=batch_size,
-            shuffle=shuffle, num_workers=num_workers,
-            drop_last=drop_last)
+                 num_workers=8, world_size=1, rank=0):
+        data_dir = Path(to_absolute_path(data_dir))
+        self.dataset = LLFFDataset(
+            data_dir, split, near, far,
+            to_render_path, batching_mode, factor,
+            to_spherify, llffhold)
+        self.data_sampler = data_dist.DistributedSampler(
+            self.dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=shuffle,
+            drop_last=drop_last
+        )
+        self.loader = FastDataLoader(
+            dataset=self.dataset, batch_size=batch_size,
+            num_workers=num_workers,
+            persistent_workers=True,
+            pin_memory=True,
+            sampler=self.data_sampler)

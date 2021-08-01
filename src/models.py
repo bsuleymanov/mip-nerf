@@ -13,16 +13,19 @@ class MipNerfModel(nn.Module):
                  stop_level_grad: bool = True,
                  use_viewdirs: bool = True,
                  lindisp: bool = False,
-                 ray_shape: str = "cone",
+                 ray_shape: str = "cylinder",
                  min_deg_point: int = 0,
                  max_deg_point: int = 16,
                  deg_view: int = 4,
-                 density_noise: float = 0.,
+                 density_noise: float = 1.,
                  density_bias: float = -1.,
                  rgb_padding: float = 0.001,
                  disable_integration: bool = False):
         super(MipNerfModel, self).__init__()
         self.mlp = MLP()
+        self.n_levels = n_levels
+        self.stop_level_grad = stop_level_grad
+        self.deg_view = deg_view
         self.n_samples = n_samples
         self.lindisp = lindisp
         self.ray_shape = ray_shape
@@ -36,6 +39,7 @@ class MipNerfModel(nn.Module):
         self.density_bias = density_bias
 
     def forward(self, rays, randomized, white_bg):
+        device = rays.origins.device
         ret = []
         for i_level in range(self.n_levels):
             if i_level == 0:
@@ -68,7 +72,8 @@ class MipNerfModel(nn.Module):
             samples_enc = mip.integrated_pos_enc(
                 samples,
                 self.min_deg_point,
-                self.max_deg_point
+                self.max_deg_point,
+                device=device
             )
 
             if self.use_viewdirs:
@@ -90,23 +95,17 @@ class MipNerfModel(nn.Module):
             rgb = rgb * (1 + 2 * self.rgb_padding) - self.rgb_padding
             density = F.softplus(raw_density + self.density_bias)
             comp_rgb, distance, acc, weights = mip.volumetric_rendering(
-                rgb, density, t_vals, rays.directions, white_bg=white_bg)
+                rgb, density, t_vals, rays.directions, white_bkgd=white_bg)
             ret.append((comp_rgb, distance, acc))
 
         return ret
 
 
-def make_mipnerf(example_batch, args, kwargs, device):
-    model = MipNerfModel(*args, **kwargs).to(device)
-    model(example_batch.to(device))
+def make_mipnerf(example_rays, device, randomized, white_bg):
+    model = MipNerfModel().to(device)
+    model(example_rays, randomized, white_bg)
 
-    init_variables = {
-        "rays": utils.namedtuple_map(lambda x: x[0], example_batch['rays']),
-        "randomized": False,
-        "white_bg": False
-    }
-
-    return model, init_variables
+    return model
 
 
 
@@ -134,27 +133,29 @@ class MLP(nn.Module):
                  n_density_channels: int = 1,
                  condition = None):
         super(MLP, self).__init__()
+        self.n_layers = n_layers
+        self.skip_layer = skip_layer
         self.n_density_channels = n_density_channels
         self.n_rgb_channels = n_rgb_channels
         self.layers = nn.ModuleList()
-        for i in range(self.n_layers):
+        for i in range(n_layers):
             self.layers.append(DenseBlock(n_units))
         self.density_layer = DenseBlock(n_density_channels)
-        if self.condition is not None:
-            self.bottleneck_layer = DenseBlock(n_units)
-            self.cond_layers = nn.ModuleList()
-            for i in range(n_layers_condition):
-                self.cond_layers.append(DenseBlock(n_units_condition))
-            self.cond_layers = nn.Sequential(*self.cond_layers)
+        #if condition is not None:
+        self.bottleneck_layer = DenseBlock(n_units)
+        self.cond_layers = nn.ModuleList()
+        for i in range(n_layers_condition):
+            self.cond_layers.append(DenseBlock(n_units_condition))
+        self.cond_layers = nn.Sequential(*self.cond_layers)
         self.rgb_layer = DenseBlock(n_rgb_channels)
 
-    def forward(self, x, condition=None):
+    def forward(self, x, condition):
         feature_dim = x.size(-1)
         n_samples = x.size(1)
         x = x.reshape(-1, feature_dim)
         inputs = x
         for i in range(self.n_layers):
-            x = self.layers[i]
+            x = self.layers[i](x)
             if i % self.skip_layer == 0 and i > 0:
                 x = torch.cat([x, inputs], dim=-1)
         raw_density = self.density_layer(x).reshape(
@@ -162,7 +163,7 @@ class MLP(nn.Module):
 
         if condition is not None:
             bottleneck = self.bottleneck_layer(x)
-            condition = torch.tile(condition[:, None, :],
+            condition = torch.tile(self.condition[:, None, :],
                                    (1, n_samples, 1))
             condition = condition.reshape([-1, condition.size(-1)])
             x = torch.cat([bottleneck, condition], dim=-1)
@@ -192,7 +193,8 @@ def render_image(render_fn, rays, rank, chunk=8192):
         if rays_remaining != 0:
             padding = n_devices - rays_remaining
             chunk_rays = utils.namedtuple_map(
-                lambda r: F.pad(r, ((0, padding), (0, 0)), mode='edge'), chunk_rays)
+                # mode = "edge", not reflect
+                lambda r: F.pad(r, (0, padding, 0, 0), mode='reflect'), chunk_rays)
         else:
             padding = 0
         # After padding the number of chunk_rays is always divisible by
