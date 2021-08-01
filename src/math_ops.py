@@ -30,17 +30,17 @@ def sorted_piecewise_constant_pdf(bins, weights, num_samples, randomized):
   # avoids NaNs when the input is zeros or small, but has no effect otherwise.
   eps = 1e-5
   weight_sum = torch.sum(weights, dim=-1, keepdims=True)
-  padding = torch.maximum(0, eps - weight_sum)
+  padding = torch.maximum(torch.zeros_like(eps - weight_sum), eps - weight_sum)
   weights += padding / weights.shape[-1]
   weight_sum += padding
 
   # Compute the PDF and CDF for each weight vector, while ensuring that the CDF
   # starts with exactly 0 and ends with exactly 1.
   pdf = weights / weight_sum
-  cdf = torch.minimum(1, torch.cumsum(pdf[..., :-1], dim=-1))
+  cdf = torch.minimum(torch.ones_like(torch.cumsum(pdf[..., :-1], dim=-1)), torch.cumsum(pdf[..., :-1], dim=-1))
   cdf = torch.cat([
-      torch.zeros(list(cdf.shape[:-1]) + [1]), cdf,
-      torch.ones(list(cdf.shape[:-1]) + [1])
+      torch.zeros(list(cdf.shape[:-1]) + [1], device=cdf.device), cdf,
+      torch.ones(list(cdf.shape[:-1]) + [1], device=cdf.device)
   ],
                         dim=-1)
 
@@ -50,7 +50,7 @@ def sorted_piecewise_constant_pdf(bins, weights, num_samples, randomized):
     u = torch.arange(num_samples) * s
     u += torch.empty(size=list(cdf.shape[:-1]) + [num_samples]).uniform_(to=s - torch.finfo(torch.float32).eps)
     # `u` is in [0, 1) --- it can be zero, but it can never be 1.
-    u = torch.minimum(u, 1. - torch.finfo(torch.float32).eps)
+    u = torch.minimum(u, torch.ones_like(u) - torch.finfo(torch.float32).eps)
   else:
     # Match the behavior of jax.random.uniform() by spanning [0, 1-eps].
     u = torch.linspace(0., 1. - torch.finfo(torch.float32).eps, num_samples)

@@ -88,8 +88,8 @@ class MipNerfModel(nn.Module):
                 raw_rgb, raw_density = self.mlp(samples_enc)
 
             if randomized and self.density_noise > 0:
-                raw_density += self.density_noise * torch.normal(
-                    raw_density.shape, dtype=raw_density.dtype)
+                raw_density += self.density_noise * torch.randn(
+                    *(raw_density.shape), dtype=raw_density.dtype, device=raw_density.device)
 
             rgb = F.sigmoid(raw_rgb)
             rgb = rgb * (1 + 2 * self.rgb_padding) - self.rgb_padding
@@ -163,11 +163,11 @@ class MLP(nn.Module):
 
         if condition is not None:
             bottleneck = self.bottleneck_layer(x)
-            condition = torch.tile(self.condition[:, None, :],
+            condition = torch.tile(condition[:, None, :],
                                    (1, n_samples, 1))
             condition = condition.reshape([-1, condition.size(-1)])
             x = torch.cat([bottleneck, condition], dim=-1)
-            x = self.cond_layers()
+            x = self.cond_layers(x)
 
         raw_rgb = self.rgb_layer(x).reshape(
             -1, n_samples, self.n_rgb_channels)
