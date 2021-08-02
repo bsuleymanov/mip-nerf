@@ -16,6 +16,7 @@ data:
       far: 1.
       factor: 4
       llffhold: 8
+      batch_size: 512
       batching_mode: "all_images"
       to_render_path: false
       to_spherify: false
@@ -27,6 +28,7 @@ training:
   weight_decay_mult: 0.
   optimizer:
     _target_: torch.optim.Adam
+    lr: 5e-4
   disable_multiscale_loss: false
   total_step: 1000000
   coarse_loss_mult: 0.1

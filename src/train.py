@@ -58,7 +58,7 @@ def run_training(rank, world_size, seed, cfg):
     example_rays = namedtuple_map(lambda x: x.to(rank), example_rays)
     example_rays = namedtuple_map(lambda x: torch.ones_like(x,
                                                             device=rank, dtype=torch.float32), example_rays)
-    model, variables = make_mipnerf(
+    model = make_mipnerf(
         example_rays,
         device=rank, randomized=cfg.training.randomized,
         white_bg=cfg.training.white_bg)
@@ -83,8 +83,13 @@ def run_training(rank, world_size, seed, cfg):
             data_iter = iter(dataloader)
             batch = next(data_iter)
 
+
+
         batch_rays = namedtuple_map(lambda x: x.to(rank), batch["rays"])
         batch_pixels = batch["pixels"].to(rank)
+        if step == 0:
+            print(f"pixels batch size: {batch_pixels.size()}")
+            print(f"rays batch size: {batch_rays[0].size()}")
         pred = model(batch_rays, cfg.training.randomized,
                      cfg.training.white_bg)
         mask = batch_rays.lossmult
@@ -95,7 +100,7 @@ def run_training(rank, world_size, seed, cfg):
         for (rgb, _, _) in pred:
             losses.append(
                 (mask * (rgb - batch_pixels[..., :3]) ** 2).sum() / mask.sum())
-        losses = torch.tensor(losses)
+        losses = torch.tensor(losses, requires_grad=True)
         losses = (cfg.training.coarse_loss_mult * losses[:-1].sum() + losses[-1])
         losses = losses.mean()
 
@@ -109,7 +114,8 @@ def run_training(rank, world_size, seed, cfg):
         optimizer.step()
         optimizer.zero_grad()
 
-        print(losses)
+        if step % 100 == 0:
+            print(f"step: {losses.item()}")
 
 def train_from_folder_distributed():
     #cfg = train_from_folder_distributed_subfunc()

@@ -29,10 +29,10 @@ def sorted_piecewise_constant_pdf(bins, weights, num_samples, randomized):
   # Pad each weight vector (only if necessary) to bring its sum to `eps`. This
   # avoids NaNs when the input is zeros or small, but has no effect otherwise.
   eps = 1e-5
-  weight_sum = torch.sum(weights, dim=-1, keepdims=True)
+  weight_sum = torch.sum(weights, dim=-1, keepdim=True)
   padding = torch.maximum(torch.zeros_like(eps - weight_sum), eps - weight_sum)
-  weights += padding / weights.shape[-1]
-  weight_sum += padding
+  weights = weights + padding / weights.shape[-1]
+  weight_sum = weight_sum + padding
 
   # Compute the PDF and CDF for each weight vector, while ensuring that the CDF
   # starts with exactly 0 and ends with exactly 1.
@@ -47,8 +47,8 @@ def sorted_piecewise_constant_pdf(bins, weights, num_samples, randomized):
   # Draw uniform samples.
   if randomized:
     s = 1 / num_samples
-    u = torch.arange(num_samples) * s
-    u += torch.empty(size=list(cdf.shape[:-1]) + [num_samples]).uniform_(to=s - torch.finfo(torch.float32).eps)
+    u = torch.arange(num_samples, device=cdf.device) * s
+    u = u + torch.empty(size=list(cdf.shape[:-1]) + [num_samples], device=cdf.device).uniform_(to=s - torch.finfo(torch.float32).eps)
     # `u` is in [0, 1) --- it can be zero, but it can never be 1.
     u = torch.minimum(u, torch.ones_like(u) - torch.finfo(torch.float32).eps)
   else:
@@ -63,8 +63,8 @@ def sorted_piecewise_constant_pdf(bins, weights, num_samples, randomized):
   def find_interval(x):
     # Grab the value where `mask` switches from True to False, and vice versa.
     # This approach takes advantage of the fact that `x` is sorted.
-    x0 = torch.max(torch.where(mask, x[..., None], x[..., :1, None]), -2)
-    x1 = torch.min(torch.where(~mask, x[..., None], x[..., -1:, None]), -2)
+    x0, _ = torch.max(torch.where(mask, x[..., None], x[..., :1, None]), -2)
+    x1, _ = torch.min(torch.where(~mask, x[..., None], x[..., -1:, None]), -2)
     return x0, x1
 
   bins_g0, bins_g1 = find_interval(bins)

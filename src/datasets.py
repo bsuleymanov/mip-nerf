@@ -60,6 +60,10 @@ class Dataset:
                 f"the split argument should be either 'train' or 'test', set"
                 f"to {split} here.")
 
+        print(f"rays: {self.rays[0].shape}")
+        print(f"images: {self.images.shape}")
+        print(f"len of dataset: {self.n_examples}")
+
     def _train_init(self):
         self._load_renderings()
         self._generate_rays()
@@ -230,9 +234,16 @@ class LLFFDataset(Dataset):
         self.h, self.w = images.shape[1:3]
         self.resolution = self.h * self.w
         if self.to_render_path:
-            self.n_examples = self.render_poses.shape[0]
+            print("kek1")
+            # ???
+            #self.n_examples = self.render_poses.shape[0]
+            self.n_examples = self.render_poses.size // self.render_poses.shape[-1]
         else:
-            self.n_examples = images.shape[0]
+            print("kek2")
+            # ???
+            print(images.shape)
+            #self.n_examples = images.shape[0]
+            self.n_examples = images.size // images.shape[-1]
 
     def _generate_rays(self):
         """Generate normalized device coordinate rays for llff."""
@@ -438,6 +449,7 @@ class LLFFDataloader:
                  drop_last=False, shuffle=False,
                  num_workers=8, world_size=1, rank=0):
         data_dir = Path(to_absolute_path(data_dir))
+
         self.dataset = LLFFDataset(
             data_dir, split, near, far,
             to_render_path, batching_mode, factor,
@@ -449,6 +461,7 @@ class LLFFDataloader:
             shuffle=shuffle,
             drop_last=drop_last
         )
+        print(f"batch_size: {batch_size}")
         self.loader = FastDataLoader(
             dataset=self.dataset, batch_size=batch_size,
             num_workers=num_workers,
