@@ -1,8 +1,8 @@
 import torch
 from torch import nn
-import mip
+import src.mip
 from torch.nn import functional as F
-import utils
+import src.utils
 
 
 class MipNerfModel(nn.Module):
